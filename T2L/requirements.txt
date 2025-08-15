@@ -1,0 +1,36 @@
+# Core Python environment
+python-dotenv==1.0.1
+
+# Data handling
+pandas==2.2.2
+numpy==1.26.4
+
+# Tableau metadata extraction
+tableauserverclient==0.28  # Tableau REST API client
+
+# Looker API
+looker-sdk==23.20.0  # Looker Python SDK
+
+# JSON/YAML config parsing
+PyYAML==6.0.1
+
+# Optional UI for reporting
+streamlit==1.37.0
+
+# AI assistance for classification / text generation
+openai==1.37.0  # Or azure-ai if using Azure OpenAI
+tiktoken==0.7.0
+
+# PDF/Excel report export (optional)
+openpyxl==3.1.5
+xlsxwriter==3.2.0
+fpdf2==2.7.9
+
+# Utils
+requests==2.32.3
+
+streamlit
+pandas
+openpyxl
+google-generativeai
+python-dotenv
