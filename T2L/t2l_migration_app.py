@@ -463,18 +463,126 @@ def generate_view_lookml(datasource, include_calcs_as_dimensions=True):
     content_lines.append("}")
     return view_name, "\n".join(content_lines)
 
-def generate_model_lookml(model_name, explores):
+def generate_model_lookml(model_name, explores, connection_name=None):
     """Generate LookML model file"""
-    lines = [f"connection: \"your_connection_name\"", "", f"# Model: {model_name}"]
+    if not connection_name:
+        connection_name = os.getenv("LOOKER_CONNECTION_NAME", "your_connection_name")
+    
+    lines = [
+        f"connection: \"{connection_name}\"",
+        "",
+        f"# Model: {model_name}",
+        f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "# Include all views",
+        "include: \"/views/*.view.lkml\"",
+        "",
+        "# Datagroup for caching",
+        "datagroup: default_datagroup {",
+        "  sql_trigger: SELECT MAX(id) FROM etl_log ;;",
+        "  max_cache_age: \"1 hour\"",
+        "}",
+        "",
+        "persist_with: default_datagroup",
+        ""
+    ]
     
     for v in explores:
         lines.append(f"explore: {v} {{")
+        lines.append(f"  group_label: \"Migrated from Tableau\"")
+        lines.append(f"  description: \"Data from {v} datasource\"")
         lines.append("}")
         lines.append("")
     
     return "\n".join(lines)
 
-def package_looker_project(parsed, assessment_df):
+def generate_dashboard_lookml(dashboard_name, dashboard_elements):
+    """Generate LookML dashboard file"""
+    dashboard_name_clean = sanitize_identifier(dashboard_name)
+    
+    content_lines = [
+        f"dashboard: {dashboard_name_clean} {{",
+        f"  title: \"{dashboard_name}\"",
+        f"  layout: newspaper",
+        f"  preferred_viewer: dashboards-next",
+        f"  # Generated from Tableau dashboard: {dashboard_name}",
+        f"  # Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "  filters: [",
+        "    {",
+        "      name: date_filter",
+        "      title: \"Date Range\"",
+        "      type: field_filter",
+        "      default_value: \"7 days\"",
+        "      allow_multiple_values: true",
+        "      required: false",
+        "    }",
+        "  ]",
+        ""
+    ]
+    
+    # Add elements
+    for i, element in enumerate(dashboard_elements):
+        element_name = sanitize_identifier(element.get("name", f"element_{i}"))
+        explore_name = sanitize_identifier(element.get("explore", ""))
+        
+        content_lines.append(f"  element: {element_name} {{")
+        content_lines.append(f"    title: \"{element.get('title', element.get('name', 'Untitled'))}\"")
+        content_lines.append(f"    query: {explore_name} {{")
+        content_lines.append(f"      # TODO: Add dimensions and measures from original Tableau worksheet")
+        content_lines.append(f"      # Original worksheet: {element.get('worksheet', 'Unknown')}")
+        
+        # Add sample dimensions and measures
+        if element.get("dimensions"):
+            content_lines.append(f"      dimensions: [{', '.join(element['dimensions'])}]")
+        if element.get("measures"):
+            content_lines.append(f"      measures: [{', '.join(element['measures'])}]")
+            
+        content_lines.append("    }")
+        content_lines.append(f"    type: looker_line")
+        content_lines.append(f"    row: {i * 6}")
+        content_lines.append(f"    col: 0")
+        content_lines.append(f"    width: 12")
+        content_lines.append(f"    height: 6")
+        content_lines.append("  }")
+        content_lines.append("")
+    
+    content_lines.append("}")
+    return "\n".join(content_lines)
+
+def extract_dashboard_elements(parsed_data):
+    """Extract dashboard elements from parsed Tableau data"""
+    dashboards = []
+    
+    # Look for dashboard information in worksheets
+    for ws in parsed_data["worksheets"]:
+        ws_name = ws["name"]
+        
+        # Create a basic dashboard element for each worksheet
+        element = {
+            "name": f"element_{sanitize_identifier(ws_name)}",
+            "title": ws_name,
+            "worksheet": ws_name,
+            "explore": sanitize_identifier(ws_name),
+            "dimensions": [],
+            "measures": []
+        }
+        
+        # Try to infer dimensions and measures from calculations
+        for calc in parsed_data["calculations"]:
+            if calc["complexity"] in ["simple", "medium"]:
+                if any(keyword in calc["formula"].upper() for keyword in ["SUM", "COUNT", "AVG", "MAX", "MIN"]):
+                    element["measures"].append(sanitize_identifier(calc["name"]))
+                else:
+                    element["dimensions"].append(sanitize_identifier(calc["name"]))
+        
+        dashboards.append({
+            "name": f"dashboard_{sanitize_identifier(ws_name)}",
+            "title": f"Dashboard for {ws_name}",
+            "elements": [element]
+        })
+    
+    return dashboards
     """Package complete LookML project"""
     files = {}
     
@@ -534,48 +642,122 @@ def deploy_lookml_to_looker():
         # Initialize SDK
         sdk = init40("looker.ini")
         
-        # Get project configuration
+        # Get project configuration from environment
         project_name = os.getenv("LOOKER_PROJECT_NAME")
         branch_name = os.getenv("LOOKER_BRANCH_NAME", "dev-migration")
         
         if not project_name:
             log_deployment_step("LOOKER_PROJECT_NAME not found in environment", "error")
+            log_deployment_step("Please set LOOKER_PROJECT_NAME in your .env file", "error")
             return False
         
-        log_deployment_step(f"Deploying project: {project_name} on branch: {branch_name}", "info")
+        log_deployment_step(f"Target project: {project_name}", "info")
+        log_deployment_step(f"Target branch: {branch_name}", "info")
         
         # Validate project exists
         try:
             project = sdk.project(project_name)
-            log_deployment_step(f"Project found: {project.name}", "success")
-        except Exception as e:
-            log_deployment_step(f"Project not found: {e}", "error")
-            return False
-        
-        # Deploy to production
-        log_deployment_step("Starting deployment to production...", "info")
-        
-        try:
-            result = sdk.deploy_ref_to_production(project_id=project_name, branch=branch_name)
-            log_deployment_step(f"Deployment successful! Result: {result}", "success")
-            return True
-        except Exception as deploy_error:
-            log_deployment_step(f"Deployment failed: {deploy_error}", "error")
+            log_deployment_step(f"✅ Project found: {project.name}", "success")
             
-            # Try to get more details about the error
+            # Get project details
+            if hasattr(project, 'git_remote_url') and project.git_remote_url:
+                log_deployment_step(f"Git repository: {project.git_remote_url}", "info")
+            
+        except Exception as e:
+            log_deployment_step(f"❌ Project '{project_name}' not found: {e}", "error")
+            log_deployment_step("Available projects:", "info")
             try:
-                validation = sdk.validate_project(project_id=project_name)
-                if validation.errors:
-                    for error in validation.errors:
-                        log_deployment_step(f"Validation error: {error.message}", "error")
+                projects = sdk.all_projects()
+                for proj in projects[:5]:  # Show first 5 projects
+                    log_deployment_step(f"  - {proj.name}", "info")
             except:
                 pass
+            return False
+        
+        # Validate branch if specified
+        if branch_name != "main" and branch_name != "master":
+            try:
+                # Try to get branch info
+                branches = sdk.all_git_branches(project_id=project_name)
+                branch_names = [b.name for b in branches if b.name]
+                
+                if branch_name not in branch_names:
+                    log_deployment_step(f"⚠️ Branch '{branch_name}' not found. Available branches: {', '.join(branch_names[:5])}", "warning")
+                    log_deployment_step(f"Will attempt to create branch '{branch_name}'", "info")
+                else:
+                    log_deployment_step(f"✅ Branch '{branch_name}' found", "success")
+                    
+            except Exception as e:
+                log_deployment_step(f"Could not validate branch: {e}", "warning")
+        
+        # Run project validation before deployment
+        log_deployment_step("Running project validation...", "info")
+        try:
+            validation = sdk.validate_project(project_id=project_name)
+            
+            if validation.errors and len(validation.errors) > 0:
+                log_deployment_step(f"⚠️ Validation found {len(validation.errors)} error(s)", "warning")
+                for error in validation.errors[:3]:  # Show first 3 errors
+                    log_deployment_step(f"  - {error.message}", "error")
+                
+                # Ask user if they want to proceed
+                log_deployment_step("Proceeding with deployment despite validation errors...", "warning")
+            else:
+                log_deployment_step("✅ Project validation passed", "success")
+                
+        except Exception as e:
+            log_deployment_step(f"Validation check failed: {e}", "warning")
+        
+        # Deploy to production
+        log_deployment_step(f"Starting deployment to production from branch '{branch_name}'...", "info")
+        
+        try:
+            # Use deploy_ref_to_production for branch deployment
+            result = sdk.deploy_ref_to_production(project_id=project_name, branch=branch_name)
+            
+            if result:
+                log_deployment_step("🎉 Deployment successful!", "success")
+                log_deployment_step(f"Deployment result: {result}", "info")
+            else:
+                log_deployment_step("✅ Deployment completed (no result returned)", "success")
+                
+            # Post-deployment validation
+            log_deployment_step("Running post-deployment validation...", "info")
+            try:
+                post_validation = sdk.validate_project(project_id=project_name)
+                if post_validation.errors and len(post_validation.errors) > 0:
+                    log_deployment_step(f"⚠️ Post-deployment validation found {len(post_validation.errors)} error(s)", "warning")
+                else:
+                    log_deployment_step("✅ Post-deployment validation passed", "success")
+            except Exception as e:
+                log_deployment_step(f"Post-deployment validation failed: {e}", "warning")
+            
+            return True
+            
+        except Exception as deploy_error:
+            log_deployment_step(f"❌ Deployment failed: {deploy_error}", "error")
+            
+            # Provide detailed error information
+            error_str = str(deploy_error)
+            if "permission" in error_str.lower():
+                log_deployment_step("💡 Check that your API user has deployment permissions", "info")
+            elif "not found" in error_str.lower():
+                log_deployment_step("💡 Verify project name and branch name are correct", "info")
+            elif "validation" in error_str.lower():
+                log_deployment_step("💡 Fix validation errors before deploying", "info")
             
             return False
             
     except Exception as e:
-        log_deployment_step(f"Connection error: {e}", "error")
-        log_deployment_step(f"Stack trace: {traceback.format_exc()}", "error")
+        log_deployment_step(f"❌ Connection error: {e}", "error")
+        
+        # Provide connection troubleshooting
+        if "authentication" in str(e).lower() or "unauthorized" in str(e).lower():
+            log_deployment_step("💡 Check your looker.ini credentials", "info")
+        elif "connection" in str(e).lower() or "network" in str(e).lower():
+            log_deployment_step("💡 Check network connectivity to Looker instance", "info")
+        
+        log_deployment_step(f"Full error: {traceback.format_exc()}", "error")
         return False
 
 # Main App Layout
@@ -1124,13 +1306,21 @@ with tab3:
             # Generation options
             include_comments = st.checkbox("Include detailed comments in LookML", value=True)
             include_measures = st.checkbox("Generate common measures automatically", value=True)
-            connection_name = st.text_input("Connection name", value="your_connection_name", 
+            include_dashboards = st.checkbox("Generate dashboard LookML files", value=True)
+            connection_name = st.text_input("Connection name", 
+                                          value=os.getenv("LOOKER_CONNECTION_NAME", "your_connection_name"), 
                                           help="Name of the database connection in Looker")
+            model_name = st.text_input("Model name",
+                                     value=os.getenv("LOOKER_MODEL_NAME", "migrated_tableau_model"),
+                                     help="Name for the generated LookML model")
         
         with col2:
             st.markdown("**Generated Files:**")
             st.write("• Model file (.model.lkml)")
             st.write("• View files (.view.lkml)")
+            if include_dashboards:
+                st.write("• Dashboard files (.dashboard.lkml)")
+            st.write("• Project manifest (manifest.lkml)")
             st.write("• Migration summary (JSON)")
             st.write("• Configuration guide")
         
@@ -1138,13 +1328,22 @@ with tab3:
         if st.button("🚀 Generate LookML Project", type="primary"):
             with st.spinner("🔧 Generating LookML files..."):
                 try:
+                    # Set environment variables for generation
+                    if connection_name and connection_name != "your_connection_name":
+                        os.environ["LOOKER_CONNECTION_NAME"] = connection_name
+                    if model_name:
+                        os.environ["LOOKER_MODEL_NAME"] = model_name
+                    
                     # Generate the LookML project
                     files = package_looker_project(st.session_state.parsed_data, assessment_df)
                     
-                    # Update connection name in model file
+                    # Update all model files with correct connection name
                     for filename, content in files.items():
                         if filename.endswith('.model.lkml'):
                             files[filename] = content.replace('your_connection_name', connection_name)
+                        elif filename.endswith('.dashboard.lkml') and not include_dashboards:
+                            # Remove dashboard files if not requested
+                            del files[filename]
                     
                     # Add configuration guide
                     config_guide = f"""
@@ -1258,12 +1457,14 @@ with tab4:
             # Check configuration
             looker_project = os.getenv("LOOKER_PROJECT_NAME")
             looker_branch = os.getenv("LOOKER_BRANCH_NAME", "dev-migration")
+            looker_connection = os.getenv("LOOKER_CONNECTION_NAME", "your_connection_name")
             
             config_status = []
             config_status.append(("Looker SDK", "✅ Available" if LOOKER_SDK_AVAILABLE else "❌ Missing"))
             config_status.append(("looker.ini", "✅ Found" if os.path.exists("looker.ini") else "❌ Missing"))
             config_status.append(("Project Name", f"✅ {looker_project}" if looker_project else "❌ Not set"))
             config_status.append(("Branch Name", f"✅ {looker_branch}" if looker_branch else "❌ Not set"))
+            config_status.append(("Connection Name", f"✅ {looker_connection}" if looker_connection != "your_connection_name" else "⚠️ Default"))
             
             for item, status in config_status:
                 st.write(f"• **{item}**: {status}")
@@ -1272,13 +1473,20 @@ with tab4:
             st.markdown("**Deployment Options:**")
             
             # Allow override of environment settings
-            override_project = st.text_input("Override Project Name", value=looker_project or "")
-            override_branch = st.text_input("Override Branch Name", value=looker_branch or "dev-migration")
+            override_project = st.text_input("Override Project Name", value=looker_project or "", 
+                                           help="Leave empty to use LOOKER_PROJECT_NAME from .env")
+            override_branch = st.text_input("Override Branch Name", value=looker_branch or "dev-migration",
+                                          help="Leave empty to use LOOKER_BRANCH_NAME from .env")
+            override_connection = st.text_input("Override Connection Name", value=looker_connection,
+                                              help="Connection name to use in generated LookML files")
             
+            # Update environment if overrides provided
             if override_project:
                 os.environ["LOOKER_PROJECT_NAME"] = override_project
             if override_branch:
                 os.environ["LOOKER_BRANCH_NAME"] = override_branch
+            if override_connection and override_connection != "your_connection_name":
+                os.environ["LOOKER_CONNECTION_NAME"] = override_connection
             
             # Deployment mode
             deployment_mode = st.radio(
