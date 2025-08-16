@@ -19,7 +19,7 @@ from utils.main_logger import logger
 from .LookML_objects import ViewBaseField, LookMLView, LookMLExplore, LookMLModel, ViewDerivedField, DashboardElement, \
     LookMLProject, Dashboard
 from .LookML_enums import ViewBaseTypeEnum, JoinTypeEnum, LookMLTimeframesEnum, TimeDatatypeEnum, \
-    LookMLDashboardElementTypeEnum, LookMLFieldStructEnum, LookMLMeasureTypeEnum, JoinRelationshipEnum # <-- Added JoinRelationshipEnum here!
+    LookMLDashboardElementTypeEnum, LookMLFieldStructEnum, LookMLMeasureTypeEnum, JoinRelationshipEnum
 from collections import OrderedDict
 from html import unescape
 import re
@@ -128,6 +128,7 @@ class Workbook:
 
     def extract_datasources(self):
         """Extracts datasource objects from the raw Tableau extract."""
+        # Ensure .get() provides a default empty dictionary if keys are missing
         ds_part = self._raw_extract.get('workbook', {}).get('datasources', {}).get('datasource', None)
         self.datasources = {}
         for ds_item in iter_tag(ds_part):
@@ -146,6 +147,7 @@ class Workbook:
 
     def extract_worksheets(self):
         """Extracts worksheet objects from the raw Tableau extract."""
+        # Ensure .get() provides a default empty dictionary if keys are missing
         ws_part = self._raw_extract.get('workbook', {}).get('worksheets', {}).get('worksheet', None)
         self.worksheets = {}
         for ws_item in iter_tag(ws_part):
@@ -407,7 +409,7 @@ class Worksheet:
         if isinstance(ds_title_parts_data, str):
             self.titles.append({'#text': ds_title_parts_data})
         else:
-            for ds_title_part in iter_tag(ds_title_parts_data):
+            for ds_title_part in iter_tag(ds_title_parts_data or []): # Ensure iter_tag gets an iterable
                 if isinstance(ds_title_part, str):
                     self.titles.append({'#text': ds_title_part})
                 elif isinstance(ds_title_part, dict):
@@ -422,24 +424,37 @@ class Worksheet:
         and links them to their corresponding metadata columns.
         """
         self.used_column_instances = {}
-        ds_dependencies = self.raw_extract.get('table', {}).get('view', {}).get('datasource-dependencies')
-        for act_ds_dependency in iter_tag(ds_dependencies):
+        # Ensure .get() provides a default empty dictionary or list
+        ds_dependencies_data = self.raw_extract.get('table', {}).get('view', {}).get('datasource-dependencies')
+        
+        # This part ensures that if 'datasource-dependencies' is a single dict, it's treated as a list.
+        # It also makes sure to default to an empty list if nothing is found.
+        if isinstance(ds_dependencies_data, dict):
+            ds_dependencies_list = [ds_dependencies_data]
+        elif isinstance(ds_dependencies_data, list):
+            ds_dependencies_list = ds_dependencies_data
+        else:
+            ds_dependencies_list = []
+
+        for act_ds_dependency in iter_tag(ds_dependencies_list):
             ds_name = act_ds_dependency.get('@datasource')
             act_ds = self.parent_object.datasources.get(ds_name)
             if not act_ds:
                 logger.warning(f"Datasource '{ds_name}' not found for dependencies in worksheet '{self.name}'.")
                 continue
 
-            column_roles = {c.get('@name'): c.get('@role') for c in iter_tag(act_ds_dependency.get('column'))}
+            # Ensure .get() provides an empty list if 'column' key is missing or not a list
+            column_roles = {c.get('@name'): c.get('@role') for c in iter_tag(act_ds_dependency.get('column', []))}
 
-            for act_column_instance_data in iter_tag(act_ds_dependency.get('column-instance')):
+            # Ensure .get() provides an empty list if 'column-instance' key is missing or not a list
+            for act_column_instance_data in iter_tag(act_ds_dependency.get('column-instance', [])):
                 column_ref = act_column_instance_data.get('@column')
                 if not column_ref:
                     logger.warning(f"Column instance without '@column' attribute in worksheet '{self.name}': {act_column_instance_data}")
                     continue
 
                 act_column_name_wo_brackets = without_square_brackets(column_ref.split('.')[-1]) # Get just the column name part
-                datasource_name_part = without_square_brackets(column_ref.split('.')[0][1:-1]) # Extract datasource name
+                # Removed datasource_name_part as it's not directly used for lookup here
 
                 found_relation_column = False
                 for act_relation in act_ds.yield_relations():
@@ -460,13 +475,15 @@ class Worksheet:
         self.pane_texts = []
         self.pane_wedge_sizes = []
         self.pane_colors = []
-        for act_pane_data in iter_tag(self.raw_extract.get('table', {}).get('panes', {}).get('pane')):
+        # Ensure .get() provides a default empty dictionary or list for 'pane'
+        for act_pane_data in iter_tag(self.raw_extract.get('table', {}).get('panes', {}).get('pane', [])):
             new_pane = WorksheetPane()
             new_pane.parent_object = self
             new_pane.raw_extract = act_pane_data
             self.panes.append(new_pane)
             
             # Populate pane-specific lists using the full column reference key
+            # Ensure .get() provides empty list if encoding type is missing
             for pane_text_column_key in new_pane.encodings.get('text', []):
                 if pane_text_column_key in self.used_column_instances:
                     self.pane_texts.append(self.used_column_instances[pane_text_column_key])
@@ -537,8 +554,9 @@ class WorksheetPane:
         logger.debug(f"{self.parent_object} mark class is '{self.mark_class}'")
 
         self.encodings = {}
+        # Ensure .items() is called on a dictionary, not None
         for encoding_type, encoding_data in p_raw_extract.get('encodings', {}).items():
-            for enc_detail_data in iter_tag(encoding_data):
+            for enc_detail_data in iter_tag(encoding_data or []): # Ensure iter_tag receives an iterable
                 column_key = enc_detail_data.get('@column')
                 if column_key:
                     self.encodings.setdefault(encoding_type, []).append(column_key)
@@ -569,7 +587,8 @@ class ParameterTable:
         logger.info(f'Parsing {self}.')
         
         self.parameter_fields = {}
-        parameter_fields_extract = p_raw_extract.get('column')
+        # Ensure .get() provides a default empty dictionary or list for 'column'
+        parameter_fields_extract = p_raw_extract.get('column', [])
         
         for param_field_data in iter_tag(parameter_fields_extract):
             new_param_field = ParameterField()
@@ -661,8 +680,9 @@ class Connection:
         
         self.conn_child_named_connections = {}
         if self.conn_class == 'federated':
-            child_named_conns = p_raw_extract.get('named-connections', {}).get('named-connection')
-            for ch_named_conn_item in iter_tag(child_named_conns):
+            # Ensure .get() provides a default empty dictionary or list for 'named-connection'
+            child_named_conns = p_raw_extract.get('named-connections', {}).get('named-connection', [])
+            for ch_named_conn_item in iter_tag(ch_named_conns):
                 new_nc = NamedConnection()
                 new_nc.raw_extract = ch_named_conn_item
                 new_nc.parent_object = self
@@ -689,7 +709,9 @@ class Connection:
 
     def extract_metadata_columns(self):
         """Extracts metadata columns and adds them to their respective relations."""
-        for act_meta_record_item in iter_tag(self.raw_extract.get('metadata-records', {}).get('metadata-record')):
+        # Ensure .get() provides a default empty dictionary or list for 'metadata-record'
+        metadata_records_data = self.raw_extract.get('metadata-records', {}).get('metadata-record', [])
+        for act_meta_record_item in iter_tag(metadata_records_data):
             if act_meta_record_item.get('@class', '') == 'column':
                 new_meta_column = MetadataColumn()
                 new_meta_column.parent_object = self
@@ -700,10 +722,22 @@ class Connection:
                 if self.relation:
                     # Check the primary relation and its children
                     for rel in self.relation.yield_relations():
-                        if without_square_brackets(new_meta_column.parent_name) == without_square_brackets(rel.rel_name):
+                        # The parent_name in metadata can be like '[Tableau_logical_table_name]'
+                        # The rel.rel_name might be like 'Tableau_logical_table_name'
+                        # So we need to normalize both for comparison.
+                        normalized_parent_name = without_square_brackets(new_meta_column.parent_name) if new_meta_column.parent_name else ''
+                        normalized_rel_name = without_square_brackets(rel.rel_name) if rel.rel_name else ''
+
+                        if normalized_parent_name and normalized_parent_name == normalized_rel_name:
                             rel.add_metacolumn(new_meta_column)
                             found_relation_for_meta = True
                             break
+                        # Also check against rel_table for relations of type 'table'
+                        normalized_rel_table = without_square_brackets(rel.rel_table.split('.')[-1]) if rel.rel_table else ''
+                        if normalized_parent_name and normalized_parent_name == normalized_rel_table:
+                             rel.add_metacolumn(new_meta_column)
+                             found_relation_for_meta = True
+                             break
                 if not found_relation_for_meta:
                     logger.warning(f"Metadata column '{new_meta_column.local_name}' (parent '{new_meta_column.parent_name}') found but no matching relation to attach it to.")
 
@@ -783,7 +817,7 @@ class JoinExpression:
         self.children_expressions = []
         expression_data = p_raw_extract.get('expression')
         
-        for child_expr_data in iter_tag(expression_data):
+        for child_expr_data in iter_tag(expression_data or []): # Ensure iter_tag gets an iterable
             new_expr = JoinExpression()
             new_expr.index = len(self.children_expressions) # Assign index based on order
             new_expr.raw_extract = child_expr_data
@@ -937,7 +971,8 @@ class Relation:
             # These types can have nested 'relation' elements
             for rel_tag_name in ('relation', '_.fcp.ObjectModelEncapsulateLegacy.true...relation',
                                  '_.fcp.ObjectModelEncapsulateLegacy.false...relation'):
-                child_relations_data = p_raw_extract.get(rel_tag_name)
+                # Ensure .get() provides a default empty dictionary or list for the relation data
+                child_relations_data = p_raw_extract.get(rel_tag_name, [])
                 for child_rel_data in iter_tag(child_relations_data):
                     new_rel = Relation()
                     new_rel.raw_extract = child_rel_data
@@ -1132,7 +1167,7 @@ class LogicalTable:
             logger.warning(f"No properties found for logical table '{self.object_id}'.")
             return
 
-        for act_property_data in iter_tag(properties_data):
+        for act_property_data in iter_tag(properties_data or []): # Ensure iter_tag gets an iterable
             if (object_rel_data := act_property_data.get('relation')):
                 # Find the actual Relation object from the datasource's connection
                 ds = self.datasource
@@ -1513,7 +1548,8 @@ class ObjectGraph:
 
     def extract_logical_tables(self):
         """Extracts logical table objects from the raw object graph data."""
-        objects_data = self.raw_extract.get('objects', {}).get('object')
+        # Ensure .get() provides a default empty dictionary or list for 'object'
+        objects_data = self.raw_extract.get('objects', {}).get('object', [])
         self.logical_tables_dict = OrderedDict() # Ensure it's empty before populating
         for object_data in iter_tag(objects_data):
             new_object = LogicalTable()
@@ -1527,7 +1563,8 @@ class ObjectGraph:
 
     def extract_relationships(self):
         """Extracts relationship objects from the raw object graph data."""
-        relationships_data = self.raw_extract.get('relationships', {}).get('relationship')
+        # Ensure .get() provides a default empty dictionary or list for 'relationship'
+        relationships_data = self.raw_extract.get('relationships', {}).get('relationship', [])
         self.relationships = [] # Ensure it's empty before populating
         for relationship_data in iter_tag(relationships_data):
             new_relationship = Relationship()
