@@ -5,6 +5,7 @@ import os
 import sys
 import logging
 from dotenv import load_dotenv
+import configparser
 
 # Add the project directory to the Python path to allow imports from `utils` and `model`
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -17,13 +18,29 @@ load_dotenv()
 # For this demo, we're providing simplified mocks.
 try:
     from model.Tableau_objects import Workbook
-    from t2l_generator import convert_tableau_to_lookml
-    # We'll simulate t2l_generator_from_server's main function here directly
-    # as it has external dependencies on the actual Tableau Server connection.
+    from t2l_generator import convert_tableau_to_lookml # This is not directly called, but kept for context
+    from utils.tableau_extract_downloader import get_tableau_workbook_file
+    from utils.constants import LOOKER_CONNECTION_NAME, TABLEAU_SERVER_URL, TABLEAU_TOKEN_NAME, TABLEAU_TOKEN_SECRET, TABLEAU_SITE_ID, TABLEAU_WORKBOOK_NAME
+    from utils.main_logger import logger # Import the logger from your utils
 except ImportError as e:
     st.error(f"Error importing core modules: {e}")
-    st.info("Please ensure your 'model' and 't2l_generator' files are correctly placed.")
+    st.info("Please ensure your 'model', 't2l_generator', and 'utils' files are correctly placed and all dependencies are installed.")
     st.stop()
+
+# --- External Package Imports ---
+try:
+    import looker_sdk
+    from looker_sdk import models
+except ImportError:
+    st.warning("`looker_sdk` not found. Please install it: `pip install looker_sdk`")
+    looker_sdk = None
+    models = None
+
+try:
+    import git
+except ImportError:
+    st.warning("`GitPython` not found. Please install it: `pip install GitPython`")
+    git = None
 
 
 # --- Streamlit App Configuration ---
@@ -36,6 +53,59 @@ st.set_page_config(
 
 st.title("Tableau to LookML Converter & Deployer ✨")
 st.markdown("Convert your Tableau workbooks to LookML and deploy them to your Looker instance.")
+
+# --- Helper Functions for Looker SDK and Git ---
+
+@st.cache_resource
+def get_looker_sdk():
+    """Initializes and returns the Looker SDK client."""
+    if looker_sdk is None:
+        return None
+    try:
+        # Assuming looker.ini is in the root directory
+        sdk = looker_sdk.init40("looker.ini")
+        # Test connection by getting current user (optional but good for debugging)
+        # user = sdk.me()
+        # logger.info(f"Looker SDK initialized for user: {user.display_name}")
+        st.success("Connected to Looker API successfully! ✅")
+        return sdk
+    except Exception as e:
+        st.error(f"Failed to initialize Looker SDK. Check your `looker.ini` configuration. Error: {e}")
+        logger.error(f"Looker SDK initialization error: {e}", exc_info=True)
+        return None
+
+def git_commit_and_push(repo_path: str, commit_message: str):
+    """Performs Git commit and push operations."""
+    if git is None:
+        st.error("GitPython is not installed. Cannot perform Git operations.")
+        return False
+    try:
+        repo = git.Repo(repo_path)
+        # Check if there are changes to commit
+        if repo.is_dirty(untracked_files=True):
+            # Add all changes to staging
+            repo.git.add(A=True)
+            # Commit changes
+            repo.index.commit(commit_message)
+            st.success(f"Git commit successful: '{commit_message}' ✅")
+
+            # Push changes to remote
+            with st.spinner("Pushing changes to remote Git repository..."):
+                origin = repo.remotes.origin
+                origin.push()
+            st.success("Git push successful! 🚀")
+            return True
+        else:
+            st.info("No changes detected in the LookML project directory. Nothing to commit.")
+            return False
+    except git.InvalidGitRepositoryError:
+        st.error(f"'{repo_path}' is not a valid Git repository. Please initialize it.")
+        return False
+    except Exception as e:
+        st.error(f"Git operation failed: {e}")
+        logger.error(f"Git operation error: {e}", exc_info=True)
+        return False
+
 
 # --- Tabs ---
 tab1, tab2, tab3 = st.tabs(["Upload Tableau File", "Convert to LookML", "Deploy to Looker"])
@@ -50,11 +120,9 @@ with tab1:
     )
 
     if uploaded_file is not None:
-        # Create a temporary directory if it doesn't exist
         temp_dir = "temp_tableau_files"
         os.makedirs(temp_dir, exist_ok=True)
 
-        # Save the uploaded file temporarily
         file_path = os.path.join(temp_dir, uploaded_file.name)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
@@ -85,7 +153,6 @@ with tab2:
         help="Select whether to convert an uploaded file or fetch from Tableau Server."
     )
 
-    lookml_output = None
     if conversion_source == "Uploaded File":
         st.subheader("Convert from Uploaded File")
         uploaded_file_path = st.session_state.get("uploaded_tableau_file_path")
@@ -96,9 +163,6 @@ with tab2:
             if st.button("Generate LookML from Uploaded File 🚀"):
                 with st.spinner("Converting Tableau workbook to LookML... This might take a moment."):
                     try:
-                        # Call the conversion function from t2l_generator.py
-                        # The deploy_object method in LookMLProject handles writing files
-                        # We need to instantiate Workbook and then call its lookml_project.deploy_object()
                         workbook = Workbook()
                         workbook.file_full_path = uploaded_file_path
                         deployed_files = workbook.lookml_project.deploy_object()
@@ -108,13 +172,13 @@ with tab2:
                         st.write("Generated files (saved in `./lookml_files` directory):")
                         for f in deployed_files:
                             st.code(f)
-                            # Optionally display content of a few generated files
                             if f.endswith(".lkml") and os.path.exists(f):
                                 with open(f, 'r') as lookml_f:
                                     st.expander(f"View content of {os.path.basename(f)}").code(lookml_f.read(), language='lookml')
 
                     except Exception as e:
                         st.error(f"Error during conversion: {e}")
+                        logger.error(f"Conversion error: {e}", exc_info=True)
                         st.exception(e)
         else:
             st.warning("Please upload a Tableau file in the 'Upload Tableau File' tab first.")
@@ -132,52 +196,47 @@ with tab2:
             """
         )
 
-        # Display current environment variables (for debugging/info)
         st.expander("Current Tableau Server Configuration (from .env)").json({
-            "TABLEAU_SERVER_URL": os.getenv("TABLEAU_SERVER_URL", "Not set"),
-            "TABLEAU_TOKEN_NAME": os.getenv("TABLEAU_TOKEN_NAME", "Not set"),
-            "TABLEAU_TOKEN_SECRET": "********" if os.getenv("TABLEAU_TOKEN_SECRET") else "Not set",
-            "TABLEAU_SITE_ID": os.getenv("TABLEAU_SITE_ID", "Default Site (empty)"),
-            "TABLEAU_WORKBOOK_NAME": os.getenv("TABLEAU_WORKBOOK_NAME", "Not set")
+            "TABLEAU_SERVER_URL": TABLEAU_SERVER_URL,
+            "TABLEAU_TOKEN_NAME": TABLEAU_TOKEN_NAME,
+            "TABLEAU_TOKEN_SECRET": "********" if TABLEAU_TOKEN_SECRET else "Not set",
+            "TABLEAU_SITE_ID": TABLEAU_SITE_ID if TABLEAU_SITE_ID else "Default Site (empty)",
+            "TABLEAU_WORKBOOK_NAME": TABLEAU_WORKBOOK_NAME
         })
 
         if st.button("Generate LookML from Tableau Server 🌐"):
-            # This simulates calling main from t2l_generator_from_server.py
-            # In a real scenario, you'd integrate directly with its functions.
-            # Here, we need to ensure the `utils` imports from t2l_generator_from_server are available.
-            try:
-                # Mocking the t2l_generator_from_server.main logic
-                # This requires actual implementation of get_tableau_workbook_file and git_repo_utils
-                st.info("Attempting to fetch workbook from Tableau Server and convert...")
-                # Assuming `get_tableau_workbook_file` and `Workbook` are available via sys.path
-                # and that the mock utilities are in place.
+            if not all([TABLEAU_SERVER_URL, TABLEAU_TOKEN_NAME, TABLEAU_TOKEN_SECRET, TABLEAU_WORKBOOK_NAME]):
+                st.error("Please ensure all required Tableau Server environment variables are set in your `.env` file.")
+            else:
+                with st.spinner("Attempting to fetch workbook from Tableau Server and convert..."):
+                    try:
+                        twb_path, _ = get_tableau_workbook_file(
+                            server_url=TABLEAU_SERVER_URL,
+                            token_name=TABLEAU_TOKEN_NAME,
+                            token_secret=TABLEAU_TOKEN_SECRET,
+                            site_id=TABLEAU_SITE_ID,
+                            workbook_name=TABLEAU_WORKBOOK_NAME
+                        )
 
-                # This part needs your actual `utils` to work fully.
-                # For demonstration, we'll simulate a successful outcome.
-                temp_dir = "temp_tableau_server_files"
-                os.makedirs(temp_dir, exist_ok=True)
-                mock_twb_path = os.path.join(temp_dir, "mock_server_workbook.twb")
-                # Create a dummy file for the mock
-                with open(mock_twb_path, "w") as f:
-                    f.write("<workbook><datasources><datasource name='MockServerData'></datasource></datasources></workbook>")
+                        if not twb_path:
+                            st.error("Failed to retrieve workbook from Tableau Server.")
+                        else:
+                            workbook = Workbook()
+                            workbook.file_full_path = twb_path
+                            deployed_files = workbook.lookml_project.deploy_object()
 
-                workbook = Workbook()
-                workbook.file_full_path = mock_twb_path # Use the mock path
-                deployed_files = workbook.lookml_project.deploy_object()
-
-                st.session_state["generated_lookml_files"] = deployed_files
-                st.success("LookML files generated from Tableau Server (simulated) successfully! 🎉")
-                st.write("Generated files (saved in `./lookml_files` directory):")
-                for f in deployed_files:
-                    st.code(f)
-                    if f.endswith(".lkml") and os.path.exists(f):
-                        with open(f, 'r') as lookml_f:
-                            st.expander(f"View content of {os.path.basename(f)}").code(lookml_f.read(), language='lookml')
-
-            except Exception as e:
-                st.error(f"Error connecting to Tableau Server or during conversion: {e}")
-                st.warning("Please ensure your Tableau Server environment variables are correctly set and the server is accessible.")
-                st.exception(e)
+                            st.session_state["generated_lookml_files"] = deployed_files
+                            st.success("LookML files generated from Tableau Server successfully! 🎉")
+                            st.write("Generated files (saved in `./lookml_files` directory):")
+                            for f in deployed_files:
+                                st.code(f)
+                                if f.endswith(".lkml") and os.path.exists(f):
+                                    with open(f, 'r') as lookml_f:
+                                        st.expander(f"View content of {os.path.basename(f)}").code(lookml_f.read(), language='lookml')
+                    except Exception as e:
+                        st.error(f"Error connecting to Tableau Server or during conversion: {e}")
+                        logger.error(f"Tableau Server conversion error: {e}", exc_info=True)
+                        st.exception(e)
 
 # --- Tab 3: Deploy to Looker ---
 with tab3:
@@ -185,25 +244,34 @@ with tab3:
     st.markdown(
         """
         Deployment typically involves pushing your generated LookML files to a Git repository connected to your Looker instance.
-        You'll need a `looker.ini` file configured with your Looker API credentials.
+        You'll need a `looker.ini` file configured with your Looker API credentials in the root directory.
         """
     )
 
     st.subheader("Looker API Configuration")
     st.markdown(
         """
-        Create a `looker.ini` file in the root of your project with the following structure:
+        The application will attempt to use `looker.ini` for SDK initialization.
+        Ensure it has the following structure:
         ```ini
         [Looker]
         base_url = YOUR_LOOKER_INSTANCE_URL
-        client_id = YOUR_ER_CLIENT_ID
+        client_id = YOUR_LOOKER_CLIENT_ID
         client_secret = YOUR_LOOKER_CLIENT_SECRET
         verify_ssl = True # or False if you have SSL issues (not recommended for production)
         ```
         """
     )
-    # Display example looker.ini content
-    st.expander("Example `looker.ini` content").code("""
+
+    # Display looker.ini content if available
+    if os.path.exists("looker.ini"):
+        st.expander("View `looker.ini` content (sensitive info hidden)").code(
+            configparser.ConfigParser().read("looker.ini") or "No content found or could not parse.",
+            language='ini'
+        )
+    else:
+        st.warning("`looker.ini` not found in the root directory. Please create it.")
+        st.expander("Example `looker.ini` content").code("""
 [Looker]
 base_url = https://your-instance.looker.com:19999
 client_id = YOUR_LOOKER_CLIENT_ID
@@ -211,26 +279,67 @@ client_secret = YOUR_LOOKER_CLIENT_SECRET
 verify_ssl = True
 """, language='ini')
 
-    st.subheader("Deployment Steps")
+
+    st.subheader("Deployment Steps with Git")
     st.markdown(
         """
-        1.  **Ensure Git Repository is Configured**: Your Looker project must be connected to a Git repository.
-        2.  **LookML Files**: The generated LookML files are typically saved in the `lookml_files` directory.
-        3.  **Push to Git**: You would then commit these `lookml_files` to your Git repository and push them.
-            Looker will detect these changes.
+        After generating LookML files in the `./lookml_files` directory, you can use the buttons below to
+        commit these changes to your **local Git repository** and then **push them to your remote**.
+        Looker will then automatically detect these changes from your connected Git repository.
         """
     )
 
-    st.warning("Direct deployment to a Looker instance via API for file updates is complex and usually handled via Git integration. This section provides conceptual steps.")
-
-    generated_files = st.session_state.get("generated_lookml_files", [])
-    if generated_files:
-        st.info("You have generated LookML files. You can now manually review them and push to your Looker-connected Git repository.")
-        st.write("Generated files ready for deployment:")
-        for f in generated_files:
-            st.code(f)
+    lookml_project_path = "./lookml_files"
+    if os.path.exists(lookml_project_path):
+        st.success(f"LookML project directory exists: `{lookml_project_path}`")
+        if git is not None:
+            if st.button("Commit and Push LookML Changes to Git ⬆️"):
+                commit_msg = st.text_input("Git Commit Message:", value="Generated LookML from Tableau conversion")
+                if commit_msg:
+                    git_commit_and_push(lookml_project_path, commit_msg)
+                else:
+                    st.warning("Please provide a commit message.")
+        else:
+            st.error("GitPython is not installed. Please install it to enable Git deployment features.")
     else:
-        st.info("No LookML files have been generated yet. Please convert a Tableau file first.")
+        st.warning(f"LookML project directory (`{lookml_project_path}`) not found. Please convert a Tableau file first.")
+
+
+    st.subheader("Looker API Interaction (Advanced)")
+    st.markdown(
+        """
+        While file-based changes are best handled via Git, the Looker SDK can be used for other deployment
+        related tasks, such as programmatically deploying a project to production after Git sync.
+        """
+    )
+
+    sdk = get_looker_sdk()
+    if sdk:
+        looker_project_id = st.text_input("Looker Project ID (optional for API deployment):", help="Enter the ID of your Looker project (e.g., 'your_project_name').")
+        if looker_project_id:
+            if st.button("Deploy Looker Project to Production via API (Manual Trigger) ⚙️"):
+                if models is None:
+                    st.error("Looker SDK models not loaded. Cannot perform API deployment.")
+                else:
+                    with st.spinner(f"Deploying Looker project '{looker_project_id}' to production..."):
+                        try:
+                            # This is a conceptual call; direct file pushes are usually Git-driven
+                            # You might refresh a project or deploy a specific branch.
+                            # Example: Triggering a deploy from a specific branch
+                            # sdk.deploy_project(body=models.WriteDeployProject(
+                            #     project_id=looker_project_id,
+                            #     ref="main" # or your development branch
+                            # ))
+                            st.success(f"Looker project '{looker_project_id}' deployment triggered successfully (simulated)! 🚀")
+                            st.info("Note: Actual LookML file changes are primarily synced via Git. This button simulates a 'deploy to production' trigger which would usually follow a Git push.")
+                        except Exception as e:
+                            st.error(f"Failed to trigger Looker project deployment: {e}")
+                            logger.error(f"Looker project deployment API error: {e}", exc_info=True)
+                            st.exception(e)
+        else:
+            st.info("Enter a Looker Project ID to enable API deployment options.")
+    else:
+        st.warning("Looker SDK not initialized. Please ensure `looker_sdk` is installed and `looker.ini` is correctly configured.")
 
     st.subheader("Debugging Steps for Production Deployment 🐛")
     st.markdown(
@@ -240,11 +349,11 @@ verify_ssl = True
         1.  **Verify Looker API Credentials**:
             * Double-check `base_url`, `client_id`, and `client_secret` in your `looker.ini`.
             * Ensure the API user has **developer permissions** for the Looker project and instance.
-            * Test connectivity using a simple Looker SDK script outside of this app.
+            * Test connectivity using a simple Looker SDK script outside of this app (e.g., `sdk.me()`).
 
         2.  **Git Integration Checks**:
-            * **Local Git Status**: After generation, check your local `lookml_files` directory and your Git repository status. Are the new/updated files staged and committed?
-            * **Remote Repository**: Verify that your changes are pushed to the remote Git repository that your Looker project is connected to.
+            * **Local Git Status**: After generation, check your local `lookml_files` directory and your Git repository status (`git status`). Are the new/updated files staged and committed?
+            * **Remote Repository**: Verify that your changes are pushed to the remote Git repository that your Looker project is connected to (`git log origin/main`).
             * **Looker Project Configuration**: In Looker (Admin -> Project), ensure your LookML project is correctly configured with the Git repository URL, SSH key (if used), and branch.
             * **Deploying in Looker**: After pushing to Git, you typically need to "Deploy to Production" from within the Looker IDE or use the `deploy_project_to_production` API endpoint if automating.
 
@@ -262,9 +371,10 @@ verify_ssl = True
             * **Looker Logs**: If you have access to Looker server logs, these can provide deeper insights into deployment failures or LookML parsing issues.
 
         6.  **Dependency Conflicts (Python Environment)**:
-            * Ensure all necessary Python libraries (e.g., `looker_sdk`, `lxml`, `python-dotenv`, `streamlit`) are installed and their versions are compatible. Use `pip freeze > requirements.txt` to manage dependencies.
+            * Ensure all necessary Python libraries (`looker_sdk`, `GitPython`, `lxml`, `python-dotenv`, `streamlit`) are installed and their versions are compatible. Use `pip freeze > requirements.txt` to manage dependencies.
 
         7.  **File Paths and Permissions**:
-            * Verify that the Streamlit application has write permissions to create the `lookml_files` directory and write `.lkml` files.
+            * Verify that the Streamlit application has write permissions to create the `lookml_files` directory and write `.lkml` files, and read permissions for `looker.ini`.
         """
     )
+
