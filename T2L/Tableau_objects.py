@@ -19,7 +19,7 @@ from utils.main_logger import logger
 from .LookML_objects import ViewBaseField, LookMLView, LookMLExplore, LookMLModel, ViewDerivedField, DashboardElement, \
     LookMLProject, Dashboard
 from .LookML_enums import ViewBaseTypeEnum, JoinTypeEnum, LookMLTimeframesEnum, TimeDatatypeEnum, \
-    LookMLDashboardElementTypeEnum, LookMLFieldStructEnum, LookMLMeasureTypeEnum
+    LookMLDashboardElementTypeEnum, LookMLFieldStructEnum, LookMLMeasureTypeEnum, JoinRelationshipEnum # <-- Added JoinRelationshipEnum here!
 from collections import OrderedDict
 from html import unescape
 import re
@@ -1480,7 +1480,7 @@ class ObjectGraph:
                 new_chained_explore.second_object = second_explore_part.first_object if isinstance(second_explore_part.first_object, LookMLView) else second_explore_part
                 
                 new_chained_explore.join_type = act_relationship._get_join_type_enum(act_relationship.rel_join)
-                new_chained_explore.join_relationship = JoinRelationshipEnum.MANY_TO_MANY # Default, should be inferred if possible
+                new_chained_explore.join_relationship = JoinRelationshipEnum.MANY_TO_MANY # Default, infer if possible
                 
                 # Populate join_sql_on from the relationship's join expression
                 if act_relationship.join_expression:
