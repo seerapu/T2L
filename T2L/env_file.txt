@@ -1,0 +1,161 @@
+# =============================================================================
+# TABLEAU TO LOOKER MIGRATION KIT - ENVIRONMENT CONFIGURATION
+# =============================================================================
+# Copy this file to .env in your project root directory
+# Fill in your actual values and keep this file secure (add to .gitignore)
+
+# =============================================================================
+# GEMINI AI CONFIGURATION
+# =============================================================================
+# Get your API key from: https://makersuite.google.com/app/apikey
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Optional: Specify Gemini model (default: gemini-2.0-flash-exp)
+GEMINI_MODEL=gemini-2.0-flash-exp
+
+# =============================================================================
+# LOOKER INSTANCE CONFIGURATION
+# =============================================================================
+# Your Looker instance URL (without trailing slash)
+LOOKER_BASE_URL=https://your-company.looker.com
+
+# Looker API Credentials (get from Admin > API Keys)
+LOOKER_CLIENT_ID=your_looker_client_id
+LOOKER_CLIENT_SECRET=your_looker_client_secret
+
+# Target LookML project name in Looker
+LOOKER_PROJECT_NAME=tableau_migration_project
+
+# Default branch for development work
+LOOKER_DEV_BRANCH=dev-migration
+
+# =============================================================================
+# DATABASE CONNECTION SETTINGS
+# =============================================================================
+# Default connection name to use in generated LookML model files
+DEFAULT_CONNECTION_NAME=your_data_warehouse_connection
+
+# Database type (for optimized SQL generation)
+# Options: snowflake, bigquery, redshift, postgres, mysql, mssql
+DATABASE_TYPE=snowflake
+
+# =============================================================================
+# STREAMLIT APPLICATION SETTINGS
+# =============================================================================
+# App title and branding
+APP_TITLE=Tableau → Looker Migration Kit
+APP_DESCRIPTION=Streamline your migration from Tableau to Looker
+
+# File upload limits (in MB)
+MAX_UPLOAD_SIZE_MB=200
+
+# Session timeout (in minutes)
+SESSION_TIMEOUT_MINUTES=120
+
+# =============================================================================
+# MIGRATION SETTINGS
+# =============================================================================
+# Default classification thresholds
+SIMPLE_THRESHOLD=0.7
+MEDIUM_THRESHOLD=0.4
+
+# Batch size for AI translation processing
+AI_TRANSLATION_BATCH_SIZE=10
+
+# Maximum number of calculations to process in one session
+MAX_CALCULATIONS_PER_SESSION=100
+
+# =============================================================================
+# OPTIONAL: TABLEAU SERVER INTEGRATION
+# =============================================================================
+# If you want to connect directly to Tableau Server (future feature)
+# TABLEAU_SERVER_URL=https://your-tableau-server.com
+# TABLEAU_USERNAME=your_tableau_username
+# TABLEAU_PASSWORD=your_tableau_password
+# TABLEAU_SITE_ID=your_site_id
+
+# =============================================================================
+# OPTIONAL: LOGGING AND MONITORING
+# =============================================================================
+# Log level (DEBUG, INFO, WARNING, ERROR)
+LOG_LEVEL=INFO
+
+# Enable detailed logging for debugging
+ENABLE_DEBUG_LOGGING=false
+
+# Log file location (relative to project root)
+LOG_FILE_PATH=logs/migration.log
+
+# =============================================================================
+# OPTIONAL: ADVANCED FEATURES
+# =============================================================================
+# Enable experimental features
+ENABLE_EXPERIMENTAL_FEATURES=false
+
+# Custom LookML template directory (if you have custom templates)
+# CUSTOM_TEMPLATE_DIR=templates/custom
+
+# Enable automatic backup before deployment
+ENABLE_AUTO_BACKUP=true
+
+# Backup directory for existing LookML files
+BACKUP_DIRECTORY=backups
+
+# =============================================================================
+# SECURITY SETTINGS
+# =============================================================================
+# Enable SSL verification for API calls
+SSL_VERIFY=true
+
+# API request timeout (in seconds)
+API_TIMEOUT=30
+
+# Maximum retry attempts for failed API calls
+MAX_RETRY_ATTEMPTS=3
+
+# =============================================================================
+# PERFORMANCE TUNING
+# =============================================================================
+# Concurrent processing threads for large workbooks
+MAX_WORKER_THREADS=4
+
+# Memory limit for XML parsing (in MB)
+XML_PARSING_MEMORY_LIMIT=500
+
+# Cache directory for temporary files
+CACHE_DIRECTORY=.cache
+
+# =============================================================================
+# NOTIFICATION SETTINGS (OPTIONAL)
+# =============================================================================
+# Email notifications for deployment status
+# SMTP_SERVER=smtp.your-company.com
+# SMTP_PORT=587
+# SMTP_USERNAME=your_email@company.com
+# SMTP_PASSWORD=your_email_password
+# NOTIFICATION_EMAIL=admin@your-company.com
+
+# Slack webhook for notifications (optional)
+# SLACK_WEBHOOK_URL=https://hooks.slack.com/your-webhook-url
+
+# =============================================================================
+# EXAMPLE VALUES FOR TESTING
+# =============================================================================
+# Uncomment and modify these for local development/testing
+
+# GEMINI_API_KEY=AIzaSyD1234567890abcdefghijklmnopqrstuvwxyz
+# LOOKER_BASE_URL=https://mycompany.cloud.looker.com
+# LOOKER_CLIENT_ID=zN42YV88C7DjdRfcps4D
+# LOOKER_CLIENT_SECRET=khdPQvvSsH5q8QnybPrxw26j
+# LOOKER_PROJECT_NAME=dev_migration_project
+# DEFAULT_CONNECTION_NAME=snowflake_prod
+
+# =============================================================================
+# NOTES
+# =============================================================================
+# 1. Never commit this file with real credentials to version control
+# 2. Add .env to your .gitignore file
+# 3. Use environment-specific files (.env.dev, .env.prod) for different stages
+# 4. For production deployment, consider using a secrets manager
+# 5. Validate all URLs don't have trailing slashes
+# 6. Ensure your Looker user has appropriate permissions for the target project
