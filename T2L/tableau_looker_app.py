@@ -54,6 +54,10 @@ st.set_page_config(
 st.title("Tableau to LookML Converter & Deployer ✨")
 st.markdown("Convert your Tableau workbooks to LookML and deploy them to your Looker instance.")
 
+# Initialize session state for LookML repo path
+if 'lookml_repo_path' not in st.session_state:
+    st.session_state.lookml_repo_path = os.path.join(os.getcwd(), 'lookml_project_repo') # Default to a new folder in current working directory
+
 # --- Helper Functions for Looker SDK and Git ---
 
 @st.cache_resource
@@ -64,9 +68,6 @@ def get_looker_sdk():
     try:
         # Assuming looker.ini is in the root directory
         sdk = looker_sdk.init40("looker.ini")
-        # Test connection by getting current user (optional but good for debugging)
-        # user = sdk.me()
-        # logger.info(f"Looker SDK initialized for user: {user.display_name}")
         st.success("Connected to Looker API successfully! ✅")
         return sdk
     except Exception as e:
@@ -84,22 +85,27 @@ def git_commit_and_push(repo_path: str, commit_message: str):
         # Check if there are changes to commit
         if repo.is_dirty(untracked_files=True):
             # Add all changes to staging
-            repo.git.add(A=True)
+            st.info("Staging all changes...")
+            repo.git.add(A=True) # Adds all new/modified/deleted files
+            st.info("Committing changes...")
             # Commit changes
             repo.index.commit(commit_message)
             st.success(f"Git commit successful: '{commit_message}' ✅")
 
             # Push changes to remote
-            with st.spinner("Pushing changes to remote Git repository..."):
+            if repo.remotes:
                 origin = repo.remotes.origin
-                origin.push()
-            st.success("Git push successful! 🚀")
+                with st.spinner("Pushing changes to remote Git repository..."):
+                    origin.push()
+                st.success("Git push successful! 🚀")
+            else:
+                st.warning("No remote Git repository configured. Changes committed locally but not pushed.")
             return True
         else:
             st.info("No changes detected in the LookML project directory. Nothing to commit.")
             return False
     except git.InvalidGitRepositoryError:
-        st.error(f"'{repo_path}' is not a valid Git repository. Please initialize it.")
+        st.error(f"'{repo_path}' is not a valid Git repository. Please initialize it first in the section above.")
         return False
     except Exception as e:
         st.error(f"Git operation failed: {e}")
@@ -161,15 +167,18 @@ with tab2:
         if uploaded_file_path:
             st.info(f"Using uploaded file: **{uploaded_file_name}**")
             if st.button("Generate LookML from Uploaded File 🚀"):
-                with st.spinner("Converting Tableau workbook to LookML... This might take a moment."):
+                with st.spinner(f"Converting Tableau workbook to LookML into `{st.session_state.lookml_repo_path}`... This might take a moment."):
                     try:
-                        workbook = Workbook()
+                        # Use the path from session state as the deployment folder
+                        # Ensure the directory exists before passing it to Workbook
+                        os.makedirs(st.session_state.lookml_repo_path, exist_ok=True)
+                        workbook = Workbook(p_deployment_folder=st.session_state.lookml_repo_path)
                         workbook.file_full_path = uploaded_file_path
                         deployed_files = workbook.lookml_project.deploy_object()
 
                         st.session_state["generated_lookml_files"] = deployed_files
                         st.success("LookML files generated successfully! 🎉")
-                        st.write("Generated files (saved in `./lookml_files` directory):")
+                        st.write(f"Generated files (saved in `{st.session_state.lookml_repo_path}` directory):")
                         for f in deployed_files:
                             st.code(f)
                             if f.endswith(".lkml") and os.path.exists(f):
@@ -197,18 +206,18 @@ with tab2:
         )
 
         st.expander("Current Tableau Server Configuration (from .env)").json({
-            "TABLEAU_SERVER_URL": TABLEAU_SERVER_URL,
-            "TABLEAU_TOKEN_NAME": TABLEAU_TOKEN_NAME,
+            "TABLEAU_SERVER_URL": TABLEAU_SERVER_URL if TABLEAU_SERVER_URL else "Not set",
+            "TABLEAU_TOKEN_NAME": TABLEAU_TOKEN_NAME if TABLEAU_TOKEN_NAME else "Not set",
             "TABLEAU_TOKEN_SECRET": "********" if TABLEAU_TOKEN_SECRET else "Not set",
             "TABLEAU_SITE_ID": TABLEAU_SITE_ID if TABLEAU_SITE_ID else "Default Site (empty)",
-            "TABLEAU_WORKBOOK_NAME": TABLEAU_WORKBOOK_NAME
+            "TABLEAU_WORKBOOK_NAME": TABLEAU_WORKBOOK_NAME if TABLEAU_WORKBOOK_NAME else "Not set"
         })
 
         if st.button("Generate LookML from Tableau Server 🌐"):
             if not all([TABLEAU_SERVER_URL, TABLEAU_TOKEN_NAME, TABLEAU_TOKEN_SECRET, TABLEAU_WORKBOOK_NAME]):
                 st.error("Please ensure all required Tableau Server environment variables are set in your `.env` file.")
             else:
-                with st.spinner("Attempting to fetch workbook from Tableau Server and convert..."):
+                with st.spinner(f"Attempting to fetch workbook from Tableau Server and convert into `{st.session_state.lookml_repo_path}`..."):
                     try:
                         twb_path, _ = get_tableau_workbook_file(
                             server_url=TABLEAU_SERVER_URL,
@@ -221,13 +230,15 @@ with tab2:
                         if not twb_path:
                             st.error("Failed to retrieve workbook from Tableau Server.")
                         else:
-                            workbook = Workbook()
+                            # Ensure the directory exists before passing it to Workbook
+                            os.makedirs(st.session_state.lookml_repo_path, exist_ok=True)
+                            workbook = Workbook(p_deployment_folder=st.session_state.lookml_repo_path)
                             workbook.file_full_path = twb_path
                             deployed_files = workbook.lookml_project.deploy_object()
 
                             st.session_state["generated_lookml_files"] = deployed_files
                             st.success("LookML files generated from Tableau Server successfully! 🎉")
-                            st.write("Generated files (saved in `./lookml_files` directory):")
+                            st.write(f"Generated files (saved in `{st.session_state.lookml_repo_path}` directory):")
                             for f in deployed_files:
                                 st.code(f)
                                 if f.endswith(".lkml") and os.path.exists(f):
@@ -265,10 +276,11 @@ with tab3:
 
     # Display looker.ini content if available
     if os.path.exists("looker.ini"):
-        st.expander("View `looker.ini` content (sensitive info hidden)").code(
-            configparser.ConfigParser().read("looker.ini") or "No content found or could not parse.",
-            language='ini'
-        )
+        config = configparser.ConfigParser()
+        config.read("looker.ini")
+        # Hide sensitive information for display
+        display_config = {s: {k: ('********' if 'secret' in k else v) for k, v in config.items(s)} for s in config.sections()}
+        st.expander("View `looker.ini` content (sensitive info hidden)").json(display_config)
     else:
         st.warning("`looker.ini` not found in the root directory. Please create it.")
         st.expander("Example `looker.ini` content").code("""
@@ -280,29 +292,71 @@ verify_ssl = True
 """, language='ini')
 
 
-    st.subheader("Deployment Steps with Git")
+    st.subheader("LookML Project Git Repository Setup")
+    st.markdown("Specify the local path to your Looker project's Git repository. This is where the generated LookML files will be saved and managed by Git.")
+
+    # User input for the Git repository path
+    st.session_state.lookml_repo_path = st.text_input(
+        "LookML Project Git Repository Path:",
+        value=st.session_state.lookml_repo_path,
+        help="This directory should be your local clone of the Git repository connected to your Looker project. All generated LookML will be placed here."
+    )
+
+    # Check if the path exists and is a Git repo
+    is_git_repo = False
+    path_exists = os.path.exists(st.session_state.lookml_repo_path)
+
+    if path_exists:
+        try:
+            _ = git.Repo(st.session_state.lookml_repo_path)
+            is_git_repo = True
+            st.success(f"Path **`{st.session_state.lookml_repo_path}`** is a valid Git repository. ✅")
+        except git.InvalidGitRepositoryError:
+            st.warning(f"Path **`{st.session_state.lookml_repo_path}`** exists but is not a Git repository.")
+            if st.button(f"Initialize Git Repository at `{st.session_state.lookml_repo_path}`"):
+                try:
+                    git.Repo.init(st.session_state.lookml_repo_path)
+                    st.success(f"Git repository initialized at **`{st.session_state.lookml_repo_path}`** 🎉")
+                    st.rerun() # Rerun to update the status
+                except Exception as e:
+                    st.error(f"Failed to initialize Git repository: {e}")
+                    logger.error(f"Git init error: {e}", exc_info=True)
+    else:
+        st.warning(f"Path **`{st.session_state.lookml_repo_path}`** does not exist.")
+        st.info("The application can create this directory for you.")
+        if st.button(f"Create Directory and Initialize Git at `{st.session_state.lookml_repo_path}`"):
+            try:
+                os.makedirs(st.session_state.lookml_repo_path, exist_ok=True)
+                git.Repo.init(st.session_state.lookml_repo_path)
+                st.success(f"Directory created and Git repository initialized at **`{st.session_state.lookml_repo_path}`** 🎉")
+                st.rerun() # Rerun to update the status
+            except Exception as e:
+                st.error(f"Failed to create directory or initialize Git repository: {e}")
+                logger.error(f"Directory/Git init error: {e}", exc_info=True)
+
+
+    st.subheader("Deployment Actions")
     st.markdown(
         """
-        After generating LookML files in the `./lookml_files` directory, you can use the buttons below to
+        Once your LookML files are generated into the specified repository path, you can use the buttons below to
         commit these changes to your **local Git repository** and then **push them to your remote**.
         Looker will then automatically detect these changes from your connected Git repository.
         """
     )
 
-    lookml_project_path = "./lookml_files"
-    if os.path.exists(lookml_project_path):
-        st.success(f"LookML project directory exists: `{lookml_project_path}`")
+    if path_exists and is_git_repo:
+        st.info(f"Generated LookML files will be placed into and committed from: `{st.session_state.lookml_repo_path}`")
         if git is not None:
             if st.button("Commit and Push LookML Changes to Git ⬆️"):
-                commit_msg = st.text_input("Git Commit Message:", value="Generated LookML from Tableau conversion")
+                commit_msg = st.text_input("Git Commit Message:", value="Generated LookML from Tableau conversion", key="git_commit_msg")
                 if commit_msg:
-                    git_commit_and_push(lookml_project_path, commit_msg)
+                    git_commit_and_push(st.session_state.lookml_repo_path, commit_msg)
                 else:
                     st.warning("Please provide a commit message.")
         else:
             st.error("GitPython is not installed. Please install it to enable Git deployment features.")
     else:
-        st.warning(f"LookML project directory (`{lookml_project_path}`) not found. Please convert a Tableau file first.")
+        st.warning("Please ensure the LookML Project Git Repository Path is valid and initialized as a Git repository before attempting deployment actions.")
 
 
     st.subheader("Looker API Interaction (Advanced)")
@@ -377,4 +431,3 @@ verify_ssl = True
             * Verify that the Streamlit application has write permissions to create the `lookml_files` directory and write `.lkml` files, and read permissions for `looker.ini`.
         """
     )
-
